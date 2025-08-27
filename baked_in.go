@@ -324,7 +324,9 @@ func isOneOfCI(fl FieldLevel) bool {
 	field := fl.Field()
 
 	if field.Kind() != reflect.String {
-		panic(fmt.Sprintf("Bad field type %s", field.Type()))
+		//panic(fmt.Sprintf("Bad field type %s", field.Type()))
+		fmt.Printf("Bad field type %s\n", field.Type())
+		return false
 	}
 	v := field.String()
 	for _, val := range vals {
@@ -345,7 +347,7 @@ func isUnique(fl FieldLevel) bool {
 		if !field.IsNil() {
 			field = field.Elem()
 		} else {
-			fmt.Printf("Bad field type %T\n", field.Interface())
+			fmt.Printf("Bad field type %s\n", field.Type())
 			return false
 		}
 	}
@@ -527,7 +529,7 @@ func isLatitude(fl FieldLevel) bool {
 		if !field.IsNil() {
 			field = field.Elem()
 		} else {
-			fmt.Printf("Bad field type %T\n", field.Interface())
+			fmt.Printf("Bad field type %s\n", field.Type())
 			return false
 		}
 	}
@@ -1759,6 +1761,7 @@ func isImage(fl FieldLevel) bool {
 	}
 
 	//panic(fmt.Sprintf("Bad field type %s", field.Type()))
+	fmt.Printf("Bad field type %s\n", field.Type())
 	return false
 }
 
@@ -2352,6 +2355,7 @@ func isGte(fl FieldLevel) bool {
 	}
 
 	//panic(fmt.Sprintf("Bad field type %s", field.Type()))
+	fmt.Printf("Bad field type %s\n", field.Type())
 	return false
 }
 
