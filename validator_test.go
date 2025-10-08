@@ -8360,6 +8360,80 @@ func TestHttpUrl(t *testing.T) {
 	PanicMatches(t, func() { _ = validate.Var(i, "http_url") }, "Bad field type int")
 }
 
+func TestHttpsUrl(t *testing.T) {
+	tests := []struct {
+		param    string
+		expected bool
+	}{
+		{"https://foo.bar#com", true},
+		{"https://foobar.com", true},
+		{"HTTPS://foobar.com", true},
+		{"http://foobar.com", false},
+		{"foobar.com", false},
+		{"https://foobar.coffee/", true},
+		{"https://foobar.中文网/", true},
+		{"https://foobar.org/", true},
+		{"https://foobar.org:8080/", true},
+		{"ftp://foobar.ru/", false},
+		{"file:///etc/passwd", false},
+		{"file://C:/windows/win.ini", false},
+		{"https://user:pass@www.foobar.com/", true},
+		{"https://127.0.0.1/", true},
+		{"https://duckduckgo.com/?q=%2F", true},
+		{"https://localhost:3000/", true},
+		{"https://foobar.com/?foo=bar#baz=qux", true},
+		{"https://foobar.com?foo=bar", true},
+		{"https://www.xn--froschgrn-x9a.net/", true},
+		{"", false},
+		{"a://b", false},
+		{"xyz://foobar.com", false},
+		{"invalid.", false},
+		{".com", false},
+		{"rtmp://foobar.com", false},
+		{"https://www.foo_bar.com/", true},
+		{"https://localhost:3000/", true},
+		{"https://foobar.com/#baz", true},
+		{"https://foobar.com#baz=qux", true},
+		{"https://foobar.com/t$-_.+!*\\'(),", true},
+		{"https://www.foobar.com/~foobar", true},
+		{"https://www.-foobar.com/", true},
+		{"https://www.foo---bar.com/", true},
+		{"mailto:someone@example.com", false},
+		{"irc://irc.server.org/channel", false},
+		{"irc://#channel@network", false},
+		{"/abs/test/dir", false},
+		{"./rel/test/dir", false},
+		{"https:", false},
+		{"https://", false},
+		{"https://#invalid", false},
+		{"http://1.1.1.1", false},
+	}
+
+	validate := New()
+
+	for i, test := range tests {
+		errs := validate.Var(test.param, "https_url")
+
+		if test.expected {
+			if !IsEqual(errs, nil) {
+				t.Fatalf("Index: %d HTTPS URL failed Error: %s", i, errs)
+			}
+		} else {
+			if IsEqual(errs, nil) {
+				t.Fatalf("Index: %d HTTPS URL failed Error: %s", i, errs)
+			} else {
+				val := getError(errs, "", "")
+				if val.Tag() != "https_url" {
+					t.Fatalf("Index: %d HTTPS URL failed Error: %s", i, errs)
+				}
+			}
+		}
+	}
+
+	i := 1
+	PanicMatches(t, func() { _ = validate.Var(i, "https_url") }, "Bad field type int")
+}
+
 func TestUri(t *testing.T) {
 	tests := []struct {
 		param    string
@@ -8968,6 +9042,31 @@ func TestAlpha(t *testing.T) {
 	errs = validate.Var(1, "alpha")
 	NotEqual(t, errs, nil)
 	AssertError(t, errs, "", "", "", "", "alpha")
+}
+
+func TestAlphaSpace(t *testing.T) {
+	validate := New()
+
+	s := "abcd"
+	errs := validate.Var(s, "alphaspace")
+	Equal(t, errs, nil)
+
+	s = "abc def"
+	errs = validate.Var(s, "alphaspace")
+	Equal(t, errs, nil)
+
+	s = "  "
+	errs = validate.Var(s, "alphaspace")
+	Equal(t, errs, nil)
+
+	s = "abc!"
+	errs = validate.Var(s, "alphaspace")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "", "", "", "", "alphaspace")
+
+	errs = validate.Var(1, "alphaspace")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "", "", "", "", "alphaspace")
 }
 
 func TestStructStringValidation(t *testing.T) {
@@ -11099,6 +11198,49 @@ func TestRequiredIf(t *testing.T) {
 	_ = validate.Struct(test3)
 }
 
+func TestRequiredIfDuplicateParams(t *testing.T) {
+	validate := New()
+
+	PanicMatches(t, func() {
+		type TestStruct struct {
+			Field1 string `validate:"required_if=Field2 value1 Field2 value2"`
+			Field2 string
+		}
+		test := TestStruct{
+			Field1: "",
+			Field2: "value1",
+		}
+		_ = validate.Struct(test)
+	}, "Duplicate param Field2 for required_if Field1")
+
+	PanicMatches(t, func() {
+		type TestStruct struct {
+			Field1 string `validate:"required_if=Field2 val1 Field3 val2 Field2 val3"`
+			Field2 string
+			Field3 string
+		}
+		test := TestStruct{
+			Field1: "",
+			Field2: "val1",
+			Field3: "val2",
+		}
+		_ = validate.Struct(test)
+	}, "Duplicate param Field2 for required_if Field1")
+
+	type TestStruct struct {
+		Field1 string `validate:"required_if=Field2 val1 Field3 val2"`
+		Field2 string
+		Field3 string
+	}
+	test := TestStruct{
+		Field1: "",
+		Field2: "val1",
+		Field3: "val2",
+	}
+	errs := validate.Struct(test)
+	NotEqual(t, errs, nil)
+}
+
 func TestRequiredUnless(t *testing.T) {
 	type Inner struct {
 		Field *string
@@ -11169,19 +11311,40 @@ func TestRequiredUnless(t *testing.T) {
 	AssertError(t, errs, "Field10", "Field10", "Field10", "Field10", "required_unless")
 	AssertError(t, errs, "Field11", "Field11", "Field11", "Field11", "required_unless")
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Errorf("test3 should have panicked!")
+	PanicMatches(t, func() {
+		test3 := struct {
+			Inner  *Inner
+			Field1 string `validate:"required_unless=Inner.Field" json:"field_1"`
+		}{
+			Inner: &Inner{Field: &fieldVal},
 		}
-	}()
+		_ = validate.Struct(test3)
+	}, "Bad param number for required_unless Field1")
 
-	test3 := struct {
-		Inner  *Inner
-		Field1 string `validate:"required_unless=Inner.Field" json:"field_1"`
-	}{
-		Inner: &Inner{Field: &fieldVal},
+	type DuplicateStruct struct {
+		Field1 string `validate:"required_unless=Field2 value1 Field2 value2"`
+		Field2 string
 	}
-	_ = validate.Struct(test3)
+	test4 := DuplicateStruct{
+		Field1: "",
+		Field2: "value1",
+	}
+	errs = validate.Struct(test4)
+	Equal(t, errs, nil)
+
+	test5 := DuplicateStruct{
+		Field1: "",
+		Field2: "value2",
+	}
+	errs = validate.Struct(test5)
+	Equal(t, errs, nil)
+
+	test6 := DuplicateStruct{
+		Field1: "",
+		Field2: "value3",
+	}
+	errs = validate.Struct(test6)
+	NotEqual(t, errs, nil)
 }
 
 func TestSkipUnless(t *testing.T) {
@@ -13442,6 +13605,100 @@ func TestValidate_ValidateMapCtx(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidate_ValidateMapCtxWithKeys(t *testing.T) {
+	type args struct {
+		data   map[string]interface{}
+		rules  map[string]interface{}
+		errors map[string]interface{}
+	}
+	tests := []struct {
+		name string
+		args args
+		want int
+	}{
+		{
+			name: "test invalid email",
+			args: args{
+				data: map[string]interface{}{
+					"email": "emailaddress",
+				},
+				rules: map[string]interface{}{
+					"email": "required,email",
+				},
+				errors: map[string]interface{}{
+					"email": "Key: 'email' Error:Field validation for 'email' failed on the 'email' tag",
+				},
+			},
+			want: 1,
+		},
+		{
+			name: "test multiple errors with capitalized keys",
+			args: args{
+				data: map[string]interface{}{
+					"Email": "emailaddress",
+					"Age":   15,
+				},
+				rules: map[string]interface{}{
+					"Email": "required,email",
+					"Age":   "number,gt=16",
+				},
+				errors: map[string]interface{}{
+					"Email": "Key: 'Email' Error:Field validation for 'Email' failed on the 'email' tag",
+					"Age":   "Key: 'Age' Error:Field validation for 'Age' failed on the 'gt' tag",
+				},
+			},
+			want: 2,
+		},
+		{
+			name: "test valid map data",
+			args: args{
+				data: map[string]interface{}{
+					"email": "email@example.com",
+					"age":   17,
+				},
+				rules: map[string]interface{}{
+					"email": "required,email",
+					"age":   "number,gt=16",
+				},
+				errors: map[string]interface{}{},
+			},
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			validate := New()
+			errs := validate.ValidateMapCtx(context.Background(), tt.args.data, tt.args.rules)
+			NotEqual(t, errs, nil)
+			Equal(t, len(errs), tt.want)
+			for key, err := range errs {
+				Equal(t, err.(ValidationErrors)[0].Error(), tt.args.errors[key])
+			}
+		})
+	}
+}
+
+func TestValidate_VarWithKey(t *testing.T) {
+	validate := New()
+	errs := validate.VarWithKey("email", "invalidemail", "required,email")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "email", "email", "email", "email", "email")
+
+	errs = validate.VarWithKey("email", "email@example.com", "required,email")
+	Equal(t, errs, nil)
+}
+
+func TestValidate_VarWithKeyCtx(t *testing.T) {
+	validate := New()
+	errs := validate.VarWithKeyCtx(context.Background(), "age", 15, "required,gt=16")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "age", "age", "age", "age", "gt")
+
+	errs = validate.VarWithKey("age", 17, "required,gt=16")
+	Equal(t, errs, nil)
 }
 
 func TestMongoDBObjectIDFormatValidation(t *testing.T) {
