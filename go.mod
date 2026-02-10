@@ -3,13 +3,13 @@ module github.com/go-playground/validator/v10
 go 1.24.0
 
 require (
-	github.com/gabriel-vasile/mimetype v1.4.11
+	github.com/gabriel-vasile/mimetype v1.4.13
 	github.com/go-playground/assert/v2 v2.2.0
 	github.com/go-playground/locales v0.14.1
 	github.com/go-playground/universal-translator v0.18.1
 	github.com/leodido/go-urn v1.4.0
-	golang.org/x/crypto v0.43.0
-	golang.org/x/text v0.30.0
+	golang.org/x/crypto v0.47.0
+	golang.org/x/text v0.33.0
 )
 
-require golang.org/x/sys v0.37.0 // indirect
+require golang.org/x/sys v0.40.0 // indirect

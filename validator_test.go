@@ -12,9 +12,11 @@ import (
 	"image"
 	"image/jpeg"
 	"image/png"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -651,7 +653,7 @@ func TestStructLevelValidations(t *testing.T) {
 
 func TestAliasTags(t *testing.T) {
 	validate := New()
-	validate.RegisterAlias("iscoloralias", "hexcolor|rgb|rgba|hsl|hsla")
+	validate.RegisterAlias("iscoloralias", "hexcolor|rgb|rgba|hsl|hsla|cmyk")
 
 	s := "rgb(255,255,255)"
 	errs := validate.Var(s, "iscoloralias")
@@ -684,7 +686,7 @@ func TestAliasTags(t *testing.T) {
 
 	fe := getError(errs, "Test.Color", "Test.Color")
 	NotEqual(t, fe, nil)
-	Equal(t, fe.ActualTag(), "hexcolor|rgb|rgba|hsl|hsla")
+	Equal(t, fe.ActualTag(), "hexcolor|rgb|rgba|hsl|hsla|cmyk")
 
 	validate.RegisterAlias("req", "required,dive,iscoloralias")
 	arr := []string{"val1", "#fff", "#000"}
@@ -694,6 +696,68 @@ func TestAliasTags(t *testing.T) {
 	AssertError(t, errs, "[0]", "[0]", "[0]", "[0]", "iscoloralias")
 
 	PanicMatches(t, func() { validate.RegisterAlias("exists!", "gt=5,lt=10") }, "Alias 'exists!' either contains restricted characters or is the same as a restricted tag needed for normal operation")
+}
+
+func TestAliasWithOrOperator(t *testing.T) {
+	validate := New()
+	validate.RegisterAlias("customnum", "numeric")
+	validate.RegisterAlias("customalpha", "alpha")
+	validate.RegisterAlias("customgt5", "gt=5")
+
+	t.Run("numeric|iscolor", func(t *testing.T) {
+		type S struct {
+			F string `validate:"numeric|iscolor"`
+		}
+		Equal(t, validate.Struct(S{"#fff"}), nil)
+		Equal(t, validate.Struct(S{"123"}), nil)
+		NotEqual(t, validate.Struct(S{"invalid!"}), nil)
+	})
+
+	t.Run("iscolor|numeric", func(t *testing.T) {
+		type S struct {
+			F string `validate:"iscolor|numeric"`
+		}
+		Equal(t, validate.Struct(S{"456"}), nil)
+		Equal(t, validate.Struct(S{"rgb(255,0,0)"}), nil)
+	})
+
+	t.Run("alpha|customnum", func(t *testing.T) {
+		type S struct {
+			F string `validate:"alpha|customnum"`
+		}
+		Equal(t, validate.Struct(S{"789"}), nil)
+		Equal(t, validate.Struct(S{"abc"}), nil)
+	})
+
+	t.Run("customnum|customalpha", func(t *testing.T) {
+		type S struct {
+			F string `validate:"customnum|customalpha"`
+		}
+		Equal(t, validate.Struct(S{"xyz"}), nil)
+	})
+
+	t.Run("alpha|customnum|email", func(t *testing.T) {
+		type S struct {
+			F string `validate:"alpha|customnum|email"`
+		}
+		Equal(t, validate.Struct(S{"test@example.com"}), nil)
+	})
+
+	t.Run("eq=0|customgt5", func(t *testing.T) {
+		type S struct {
+			F int `validate:"eq=0|customgt5"`
+		}
+		Equal(t, validate.Struct(S{0}), nil)
+		Equal(t, validate.Struct(S{10}), nil)
+		NotEqual(t, validate.Struct(S{3}), nil)
+	})
+
+	t.Run("numeric|country_code", func(t *testing.T) {
+		type S struct {
+			F string `validate:"numeric|country_code"`
+		}
+		Equal(t, validate.Struct(S{"US"}), nil)
+	})
 }
 
 func TestNilValidator(t *testing.T) {
@@ -2183,7 +2247,11 @@ func TestCrossNamespaceFieldValidation(t *testing.T) {
 	Equal(t, current.String(), "<*validator.SliceStruct Value>")
 	Equal(t, current.IsNil(), true)
 
-	PanicMatches(t, func() { v.getStructFieldOKInternal(reflect.ValueOf(1), "crazyinput") }, "Invalid field namespace")
+	// Test that invalid namespace on primitive type returns found=false instead of panicking
+	// This enables cross-field validators like required_if to work with ValidateMap
+	_, kind, _, ok = v.getStructFieldOKInternal(reflect.ValueOf(1), "crazyinput")
+	Equal(t, ok, false)
+	Equal(t, kind, reflect.Int)
 }
 
 func TestExistsValidation(t *testing.T) {
@@ -2948,6 +3016,98 @@ func TestUnixAddrValidation(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestUnixDomainSocketExistsValidation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix domain sockets are not supported on Windows")
+	}
+
+	validate := New()
+
+	t.Run("empty", func(t *testing.T) {
+		errs := validate.Var("", "uds_exists")
+		NotEqual(t, errs, nil)
+		AssertError(t, errs, "", "", "", "", "uds_exists")
+	})
+
+	t.Run("non_existent", func(t *testing.T) {
+		errs := validate.Var("/tmp/nonexistent.sock", "uds_exists")
+		NotEqual(t, errs, nil)
+		AssertError(t, errs, "", "", "", "", "uds_exists")
+	})
+
+	t.Run("sock_file", func(t *testing.T) {
+		sockPath := "/tmp/test_validator.sock"
+		var lc net.ListenConfig
+		listener, err := lc.Listen(t.Context(), "unix", sockPath)
+		if err != nil {
+			t.Fatalf("Failed to create test socket: %v", err)
+		}
+		defer func() {
+			_ = os.Remove(sockPath)
+			_ = listener.Close()
+		}()
+
+		errs := validate.Var(sockPath, "uds_exists")
+		Equal(t, errs, nil)
+	})
+
+	t.Run("regular_file", func(t *testing.T) {
+		regularFile := "/tmp/test_validator_regular.txt"
+		if err := os.WriteFile(regularFile, []byte("test"), 0644); err != nil {
+			t.Fatalf("Failed to create regular file: %v", err)
+		}
+		defer func() {
+			_ = os.Remove(regularFile)
+		}()
+
+		errs := validate.Var(regularFile, "uds_exists")
+		NotEqual(t, errs, nil)
+		AssertError(t, errs, "", "", "", "", "uds_exists")
+	})
+
+	t.Run("directory", func(t *testing.T) {
+		dirPath := "/tmp/test_validator_dir"
+		if err := os.Mkdir(dirPath, 0755); err != nil && !os.IsExist(err) {
+			t.Fatalf("Failed to create directory: %v", err)
+		}
+		defer func() {
+			_ = os.RemoveAll(dirPath)
+		}()
+
+		errs := validate.Var(dirPath, "uds_exists")
+		NotEqual(t, errs, nil)
+		AssertError(t, errs, "", "", "", "", "uds_exists")
+	})
+
+	// only supported on linux
+	t.Run("abstract_sockets", func(t *testing.T) {
+		if runtime.GOOS != "linux" {
+			return
+		}
+
+		t.Run("non_existent", func(t *testing.T) {
+			errs := validate.Var("@nonexistent_abstract_socket", "uds_exists")
+			NotEqual(t, errs, nil)
+			AssertError(t, errs, "", "", "", "", "uds_exists")
+		})
+
+		t.Run("existing", func(t *testing.T) {
+			abstractSockName := "@test_abstract_socket_" + fmt.Sprintf("%d", time.Now().UnixNano())
+			var lc net.ListenConfig
+			abstractListener, err := lc.Listen(t.Context(), "unix", "\x00"+abstractSockName[1:])
+			if err != nil {
+				t.Fatalf("Failed to create abstract socket: %v", err)
+			}
+			defer func() {
+				_ = abstractListener.Close()
+			}()
+
+			errs := validate.Var(abstractSockName, "uds_exists")
+			Equal(t, errs, nil)
+		})
+	})
 }
 
 func TestSliceMapArrayChanFuncPtrInterfaceRequiredValidation(t *testing.T) {
@@ -3904,7 +4064,7 @@ func TestMultibyteValidation(t *testing.T) {
 
 func TestPrintableASCIIValidation(t *testing.T) {
 	tests := []struct {
-		param    string
+		param    interface{}
 		expected bool
 	}{
 		{"", true},
@@ -3918,6 +4078,8 @@ func TestPrintableASCIIValidation(t *testing.T) {
 		{"1234abcDEF", true},
 		{"newline\n", false},
 		{"\x19test\x7F", false},
+		{[]int{3000}, false},
+		{1, false},
 	}
 
 	validate := New()
@@ -3944,7 +4106,7 @@ func TestPrintableASCIIValidation(t *testing.T) {
 
 func TestASCIIValidation(t *testing.T) {
 	tests := []struct {
-		param    string
+		param    interface{}
 		expected bool
 	}{
 		{"", true},
@@ -3957,6 +4119,8 @@ func TestASCIIValidation(t *testing.T) {
 		{"test@example.com", true},
 		{"1234abcDEF", true},
 		{"", true},
+		{[]int{3000}, false},
+		{1, false},
 	}
 
 	validate := New()
@@ -8565,6 +8729,47 @@ func TestOrTag(t *testing.T) {
 	NotEqual(t, fe, nil)
 }
 
+func TestCmyk(t *testing.T) {
+	validate := New()
+
+	s := "cmyk(0%, 100%, 50%, 0%)"
+	errs := validate.Var(s, "cmyk")
+	Equal(t, errs, nil)
+
+	s = "cmyk(0%, 0%, 0%, 0%)"
+	errs = validate.Var(s, "cmyk")
+	Equal(t, errs, nil)
+
+	s = "cmyk(0%, 0.1%, 0%, 0%)"
+	errs = validate.Var(s, "cmyk")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "", "", "", "", "cmyk")
+
+	s = "cmyk(0, 100%, 50%, 0%)"
+	errs = validate.Var(s, "cmyk")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "", "", "", "", "cmyk")
+
+	s = "cmyk(0%, 101%, 50%)"
+	errs = validate.Var(s, "cmyk")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "", "", "", "", "cmyk")
+
+	s = "cmyk(0%, 100%, 50%)"
+	errs = validate.Var(s, "cmyk")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "", "", "", "", "cmyk")
+
+	s = "cmyk(0%, 0%, 0%)"
+	errs = validate.Var(s, "cmyk")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "", "", "", "", "cmyk")
+
+	i := 1
+	errs = validate.Var(i, "cmyk")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "", "", "", "", "cmyk")
+}
 func TestHsla(t *testing.T) {
 	validate := New()
 
@@ -8732,6 +8937,37 @@ func TestRgb(t *testing.T) {
 	errs = validate.Var(i, "rgb")
 	NotEqual(t, errs, nil)
 	AssertError(t, errs, "", "", "", "", "rgb")
+}
+
+func TestE164(t *testing.T) {
+	validate := New()
+
+	tests := []struct {
+		number   string
+		expected bool
+	}{
+		{"+12025550123", true},
+		{"+447911123456", true},
+		{"0123456789", false},
+		{"++12025550123", false},
+		{"+1 202-555-0123", false},
+		{"1234567", false},
+		{"12345678", true},
+		{"123456", false},
+		{"0123456789", false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.number, func(t *testing.T) {
+			errs := validate.Var(test.number, "e164")
+			if test.expected {
+				Equal(t, errs, nil)
+			} else {
+				NotEqual(t, errs, nil)
+				AssertError(t, errs, "", "", "", "", "e164")
+			}
+		})
+	}
 }
 
 func TestEmail(t *testing.T) {
@@ -9067,6 +9303,73 @@ func TestAlphaSpace(t *testing.T) {
 	errs = validate.Var(1, "alphaspace")
 	NotEqual(t, errs, nil)
 	AssertError(t, errs, "", "", "", "", "alphaspace")
+}
+
+func TestAlphaNumericSpace(t *testing.T) {
+	validate := New()
+
+	s := "abcd 123"
+	errs := validate.Var(s, "alphanumspace")
+	Equal(t, errs, nil)
+
+	s = "  "
+	errs = validate.Var(s, "alphanumspace")
+	Equal(t, errs, nil)
+
+	s = "abc123"
+	errs = validate.Var(s, "alphanumspace")
+	Equal(t, errs, nil)
+
+	s = "123"
+	errs = validate.Var(s, "alphanumspace")
+	Equal(t, errs, nil)
+
+	s = "abc"
+	errs = validate.Var(s, "alphanumspace")
+	Equal(t, errs, nil)
+
+	s = "áçć 123"
+	errs = validate.Var(s, "alphanumspace")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "", "", "", "", "alphanumspace")
+
+	s = "日本 123"
+	errs = validate.Var(s, "alphanumspace")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "", "", "", "", "alphanumspace")
+
+	s = "abc!"
+	errs = validate.Var(s, "alphanumspace")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "", "", "", "", "alphanumspace")
+
+	s = "abc\t123"
+	errs = validate.Var(s, "alphanumspace")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "", "", "", "", "alphanumspace")
+
+	s = "abc\n123"
+	errs = validate.Var(s, "alphanumspace")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "", "", "", "", "alphanumspace")
+
+	s = "abc-123"
+	errs = validate.Var(s, "alphanumspace")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "", "", "", "", "alphanumspace")
+
+	s = "abc🙂123"
+	errs = validate.Var(s, "alphanumspace")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "", "", "", "", "alphanumspace")
+
+	errs = validate.Var(1, "alphanumspace")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "", "", "", "", "alphanumspace")
+
+	errs = validate.Var(1.23, "alphanumspace")
+	NotEqual(t, errs, nil)
+	AssertError(t, errs, "", "", "", "", "alphanumspace")
 }
 
 func TestStructStringValidation(t *testing.T) {
@@ -11345,6 +11648,21 @@ func TestRequiredUnless(t *testing.T) {
 	}
 	errs = validate.Struct(test6)
 	NotEqual(t, errs, nil)
+
+	test7 := struct {
+		Field1 int
+		Field2 string `validate:"required_unless=Field1 1 Field1 2"`
+		Field3 int
+		Field4 string `validate:"required_unless=Field3 1 Field3 2"`
+	}{
+		Field1: 1,
+		Field3: 3,
+	}
+
+	errs = validate.Struct(test7)
+	NotEqual(t, errs, nil)
+
+	AssertError(t, errs, "Field4", "Field4", "Field4", "Field4", "required_unless")
 }
 
 func TestSkipUnless(t *testing.T) {
@@ -12376,6 +12694,26 @@ func TestExcludedUnless(t *testing.T) {
 		Inner: &Inner{Field: &fieldVal},
 	}
 	_ = validate.Struct(panicTest)
+
+	test9 := struct {
+		Field1 int
+		Field2 string `validate:"excluded_unless=Field1 1 Field1 2"`
+		Field3 int
+		Field4 string `validate:"excluded_unless=Field3 1 Field3 2"`
+	}{
+		Field1: 1,
+		Field2: "foo",
+		Field3: 3,
+		Field4: "foo",
+	}
+
+	errs = validate.Struct(test9)
+	NotEqual(t, errs, nil)
+
+	ve = errs.(ValidationErrors)
+	Equal(t, len(ve), 1)
+
+	AssertError(t, errs, "Field4", "Field4", "Field4", "Field4", "excluded_unless")
 }
 
 func TestLookup(t *testing.T) {
@@ -13031,6 +13369,15 @@ func TestIsIso4217Validation(t *testing.T) {
 		{"TRY", true},
 		{"EUR", true},
 		{"USA", false},
+		{"SLE", true},
+		{"SLL", false},
+		{"VED", true},
+		{"XCG", true},
+		{"ZWG", true},
+		{"ANG", false},
+		{"CUC", false},
+		{"HRK", false},
+		{"ZWL", false},
 	}
 
 	validate := New()
@@ -13058,6 +13405,14 @@ func TestIsIso4217NumericValidation(t *testing.T) {
 		{8, true},
 		{12, true},
 		{13, false},
+		{925, true},
+		{694, false},
+		{924, true},
+		{926, true},
+		{532, true},
+		{191, false},
+		{931, false},
+		{932, false},
 	}
 
 	validate := New()
@@ -13202,7 +13557,47 @@ func TestBCP47LanguageTagValidation(t *testing.T) {
 	}, "Bad field type int")
 }
 
-func TestBicIsoFormatValidation(t *testing.T) {
+func TestBicIso2014FormatValidation(t *testing.T) {
+	tests := []struct {
+		value    string `validate:"bic_iso_9362_2014"`
+		tag      string
+		expected bool
+	}{
+		{"SBICKEN1345", "bic_iso_9362_2014", true},
+		{"SBICKEN1", "bic_iso_9362_2014", true},
+		{"SBICKENY", "bic_iso_9362_2014", true},
+		{"SBICKEN1YYP", "bic_iso_9362_2014", true},
+		{"SBIC23NXXX", "bic_iso_9362_2014", false},
+		{"S23CKENXXXX", "bic_iso_9362_2014", false},
+		{"SBICKENXX", "bic_iso_9362_2014", false},
+		{"SBICKENXX9", "bic_iso_9362_2014", false},
+		{"SBICKEN13458", "bic_iso_9362_2014", false},
+		{"SBICKEN", "bic_iso_9362_2014", false},
+	}
+
+	validate := New()
+
+	for i, test := range tests {
+		errs := validate.Var(test.value, test.tag)
+
+		if test.expected {
+			if !IsEqual(errs, nil) {
+				t.Fatalf("Index: %d bic_iso_9362_2014 failed Error: %s", i, errs)
+			}
+		} else {
+			if IsEqual(errs, nil) {
+				t.Fatalf("Index: %d bic_iso_9362_2014 failed Error: %s", i, errs)
+			} else {
+				val := getError(errs, "", "")
+				if val.Tag() != "bic_iso_9362_2014" {
+					t.Fatalf("Index: %d bic_iso_9362_2014 failed Error: %s", i, errs)
+				}
+			}
+		}
+	}
+}
+
+func TestBicIso2022FormatValidation(t *testing.T) {
 	tests := []struct {
 		value    string `validate:"bic"`
 		tag      string
@@ -13212,12 +13607,46 @@ func TestBicIsoFormatValidation(t *testing.T) {
 		{"SBICKEN1", "bic", true},
 		{"SBICKENY", "bic", true},
 		{"SBICKEN1YYP", "bic", true},
+		{"E097AEXX", "bic", true}, // valid under https://www.iso.org/standard/84108.html
 		{"SBIC23NXXX", "bic", false},
-		{"S23CKENXXXX", "bic", false},
+		{"S23CKENXXXX", "bic", true},
 		{"SBICKENXX", "bic", false},
 		{"SBICKENXX9", "bic", false},
 		{"SBICKEN13458", "bic", false},
 		{"SBICKEN", "bic", false},
+		{"DEUTDEFF", "bic", true},    // 8-char classic (Germany)
+		{"DEUTDEFF500", "bic", true}, // 11-char with numeric branch
+		{"A1B2US33", "bic", true},    // digits allowed in 4!c (bank code)
+		{"1234US33", "bic", true},    // all digits in 4!c (2022)
+		{"ZZZ1USAA", "bic", true},    // mixed alnum bank + alnum location
+		{"AB12AE00", "bic", true},    // UAE 8-char
+		{"AB12AE009Z9", "bic", true}, // UAE 11-char with mixed branch
+		{"WG11US335AB", "bic", true}, // example-style with digits in branch
+		{"BNPAFRPP", "bic", true},    // France (BNP Paribas style)
+		{"BOFAUS3NXXX", "bic", true}, // US with default XXX branch
+		{"HSBCHKHHXXX", "bic", true}, // Hong Kong, default branch
+		{"NEDSZAJJ", "bic", true},    // South Africa 8-char
+		{"BARCGB22", "bic", true},    // GB 8-char
+		{"BARCGB22XXX", "bic", true}, // GB 11-char with XXX branch
+		{"0000GB00", "bic", true},    // 4!c all digits + 2!c all digits (allowed)
+		{"A1B2GB00XXX", "bic", true}, // valid 11-char with numeric location and XXX
+		{"TATRAEBX", "bic", true},    // UAE 8-char
+		{"TATRSABX", "bic", true},    // Saudi 8-char
+		{"TATREGBX", "bic", true},    // Egypt 8-char
+		{"TATRBHBX", "bic", true},    // Bahrain 8-char
+
+		{"DEUTDEFFF", "bic", false},    // 9-char (invalid length)
+		{"DEUTDEFF5", "bic", false},    // 9-char (invalid length)
+		{"DEUTDE", "bic", false},       // 6-char (invalid length)
+		{"DEUTDEFF50", "bic", false},   // 10-char (invalid length)
+		{"DEUTDEFF5000", "bic", false}, // 12-char (invalid length)
+		{"deUTDEFF", "bic", false},     // lowercase not allowed
+		{"DEUTDEfF", "bic", false},     // lowercase in location
+		{"DEU@DEFF", "bic", false},     // special char in bank
+		{"ABCD12FF", "bic", false},     // digits in 2!a country (invalid)
+		{"ABCDDE1-", "bic", false},     // hyphen in location
+		{"ABCDDE1_", "bic", false},     // underscore in location
+		{"ABCDDE١٢", "bic", false},     // non-ASCII digits in location
 	}
 
 	validate := New()
@@ -13679,6 +14108,78 @@ func TestValidate_ValidateMapCtxWithKeys(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestValidateMapWithCrossFieldValidators tests that cross-field validators
+// like required_if, required_unless, etc. don't panic when used with ValidateMap.
+// This is a regression test for issue #893.
+//
+// Note: With ValidateMap, cross-field lookups return "not found" since there's no
+// struct context. Validators handle this by using their defaultNotFoundValue:
+// - required_if: condition not met (returns false) → field not required
+// - required_unless: condition not met (returns false) → field required
+// - excluded_if: condition not met (returns false) → field not excluded
+// - excluded_unless: condition not met (returns false) → field must be excluded
+func TestValidateMapWithCrossFieldValidators(t *testing.T) {
+	validate := New()
+
+	// Test required_if - should not panic
+	// Cross-field lookup returns not found → condition not met → field not required
+	data := map[string]interface{}{
+		"name": "hello",
+		"id":   123,
+	}
+	rules := map[string]interface{}{
+		"name": "required_if=id 345",
+		"id":   "required",
+	}
+	errs := validate.ValidateMap(data, rules)
+	Equal(t, len(errs), 0)
+
+	// Test required_unless - should not panic
+	// Cross-field lookup returns not found → condition not met → field required
+	// Since name has a value, validation passes
+	rules2 := map[string]interface{}{
+		"name": "required_unless=id 345",
+		"id":   "required",
+	}
+	errs = validate.ValidateMap(data, rules2)
+	Equal(t, len(errs), 0)
+
+	// Test excluded_if - should not panic
+	// Cross-field lookup returns not found → condition not met → field not excluded
+	rules3 := map[string]interface{}{
+		"name": "excluded_if=id 123",
+		"id":   "required",
+	}
+	errs = validate.ValidateMap(data, rules3)
+	Equal(t, len(errs), 0)
+
+	// Test excluded_unless - should not panic
+	// Cross-field lookup returns not found → condition not met → field must be excluded
+	// Since name has a value, validation FAILS (this is expected behavior)
+	rules4 := map[string]interface{}{
+		"name": "excluded_unless=id 123",
+		"id":   "required",
+	}
+	errs = validate.ValidateMap(data, rules4)
+	Equal(t, len(errs), 1) // Fails because name has value but condition can't be verified
+
+	// Test excluded_unless with empty value - should pass since field is excluded
+	dataEmpty := map[string]interface{}{
+		"name": "",
+		"id":   123,
+	}
+	errs = validate.ValidateMap(dataEmpty, rules4)
+	Equal(t, len(errs), 0)
+
+	// Test with empty name - required_if condition not met, so empty is ok
+	data2 := map[string]interface{}{
+		"name": "",
+		"id":   123,
+	}
+	errs = validate.ValidateMap(data2, rules)
+	Equal(t, len(errs), 0)
 }
 
 func TestValidate_VarWithKey(t *testing.T) {

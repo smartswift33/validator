@@ -123,6 +123,7 @@ validate := validator.New(validator.WithRequiredStructEnabled())
 | udp6_addr | User Datagram Protocol Address UDPv6 |
 | udp_addr | User Datagram Protocol Address UDP |
 | unix_addr | Unix domain socket end point Address |
+| uds_exists | Unix domain socket exists (checks filesystem sockets and Linux abstract sockets) |
 | uri | URI String |
 | url | URL String |
 | http_url | HTTP(s) URL String |
@@ -137,6 +138,7 @@ validate := validator.New(validator.WithRequiredStructEnabled())
 | alpha | Alpha Only |
 | alphaspace | Alpha Space |
 | alphanum | Alphanumeric |
+| alphanumspace | Alphanumeric Space |
 | alphanumunicode | Alphanumeric Unicode |
 | alphaunicode | Alpha Unicode |
 | ascii | ASCII |
@@ -164,7 +166,8 @@ validate := validator.New(validator.WithRequiredStructEnabled())
 | base64 | Base64 String |
 | base64url | Base64URL String |
 | base64rawurl | Base64RawURL String |
-| bic | Business Identifier Code (ISO 9362) |
+| bic_iso_9362_2014 | Business Identifier Code (ISO 9362:2014) |
+| bic | Business Identifier Code (ISO 9362:2022) |
 | bcp47_language_tag | Language tag (BCP 47) |
 | btc_addr | Bitcoin Address |
 | btc_addr_bech32 | Bitcoin Bech32 Address (segwit) |
@@ -182,6 +185,7 @@ validate := validator.New(validator.WithRequiredStructEnabled())
 | hexcolor | Hexcolor String |
 | hsl | HSL String |
 | hsla | HSLA String |
+| cmyk | CMYK String |
 | html | HTML Tags |
 | html_encoded | HTML Encoded |
 | isbn | International Standard Book Number |
@@ -271,7 +275,7 @@ validate := validator.New(validator.WithRequiredStructEnabled())
 #### Aliases:
 | Tag | Description |
 | - | - |
-| iscolor | hexcolor\|rgb\|rgba\|hsl\|hsla |
+| iscolor | hexcolor\|rgb\|rgba\|hsl\|hsla\|cmyk |
 | country_code | iso3166_1_alpha2\|iso3166_1_alpha3\|iso3166_1_alpha_numeric |
 
 Benchmarks
